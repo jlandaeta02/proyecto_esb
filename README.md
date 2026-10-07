@@ -1,4 +1,4 @@
-# proyecto_esb
+# Proyecto Bus de servicio ESB Java 17 IBM iSeries
 
 1. Estructura de Directorios en el IFS (/opt/bankesb/)
 La ruta base recomendada en el IFS es /opt/bankesb/ (o /apps/bankesb/). Esta estructura facilita los permisos de seguridad y la integración con comandos nativos de IBM i:
