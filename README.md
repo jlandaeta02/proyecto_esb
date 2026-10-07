@@ -22,6 +22,16 @@ Para ejecutar la lógica, se asume la existencia de las tablas de cuentas y movi
 <img width="747" height="463" alt="imagen" src="https://github.com/user-attachments/assets/24a94837-c2ef-460d-ab69-7fa5d52d1555" />
 
 
+Resumen del Flujo de Ejecución End-to-End
+
+<img width="741" height="412" alt="imagen" src="https://github.com/user-attachments/assets/51f803fd-b092-47f4-8006-6d461cc25648" />
+
+Protip: Automatizar Compilación y Ejecución
+Para evitar tener que hacer esto a mano cada vez, integra la compilación en tu archivo run-esb.sh. Ábrelo y déjalo estructurado de la siguiente manera:
+
+<img width="753" height="754" alt="imagen" src="https://github.com/user-attachments/assets/fd525a47-21b0-46df-955f-33724c03670f" />
+
+
 
 
 
