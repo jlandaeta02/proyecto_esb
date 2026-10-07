@@ -1,0 +1,160 @@
+package com.bank.esb.concurrency;
+
+import com.bank.esb.db.BankingOperationsDAO;
+import com.bank.esb.router.ServiceRouter;
+import com.bank.esb.security.SecurityService;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import javax.net.ssl.SSLSocket;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+
+/**
+ * Tarea encargada de procesar de forma individual y concurrente
+ * cada petición bancaria recibida a través del Socket TLS.
+ */
+public class ClientTask implements Runnable {
+
+    private final Socket clientSocket;
+
+    public ClientTask(Socket socket) {
+        this.clientSocket = socket;
+    }
+
+    @Override
+    public void run() {
+        String clientIp = clientSocket.getInetAddress().getHostAddress();
+
+        try (
+            // Adaptar buffers de lectura/escritura en UTF-8 sobre el socket TLS
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(clientSocket.getInputStream(), StandardCharsets.UTF_8));
+            BufferedWriter writer = new BufferedWriter(
+                    new OutputStreamWriter(clientSocket.getOutputStream(), StandardCharsets.UTF_8))
+        ) {
+            // 1. Forzar el Handshake SSL/TLS explícito si el socket es un SSLSocket
+            if (clientSocket instanceof SSLSocket) {
+                SSLSocket sslSocket = (SSLSocket) clientSocket;
+                sslSocket.startHandshake();
+            }
+
+            // Configurar timeout de lectura por socket para evitar hilos colgados (ej. 15 segundos)
+            clientSocket.setSoTimeout(15000);
+
+            // 2. Leer la trama de entrada (se asume un mensaje JSON terminado en salto de línea)
+            String inputLine = reader.readLine();
+            System.err.println("input line : " + inputLine);
+
+            if (inputLine == null || inputLine.trim().isEmpty()) {
+                sendErrorResponse(writer, "400", "Petición vacía o conexión cerrada prematuramente por el cliente.");
+                return;
+            }
+
+            // 3. Procesar y autenticar la petición JSON
+            JSONObject response = processMessage(inputLine, clientIp);
+
+            // 4. Enviar respuesta final
+            writer.write(response.toString());
+            writer.newLine();
+            writer.flush();
+
+        } catch (java.net.SocketTimeoutException e) {
+            System.err.println("[ESB ClientTask] Timeout de lectura alcanzado para el cliente: " + clientIp);
+        } catch (Exception e) {
+            System.err.println("[ESB ClientTask] Error procesando la conexión de " + clientIp + ": " + e.getMessage());
+            e.printStackTrace();
+        } finally {
+            closeSocket();
+        }
+    }
+
+    /**
+     * Valida la estructura del JSON, la autenticación por API Key y la firma HMAC
+     * antes de derivar la petición al enrutador de servicios.
+     */
+    private JSONObject processMessage(String rawJson, String clientIp) {
+        JSONObject response = new JSONObject();
+
+        try {
+            JSONObject request = new JSONObject(rawJson);
+            System.err.println("rawJson : " + rawJson);
+
+            // Validación de campos estructurales obligatorios
+            if (!request.has("apiKey") || !request.has("signature") || !request.has("service") || !request.has("payload")) {
+                response.put("code", "400");
+                response.put("message", "Estructura de petición inválida. Campos requeridos: apiKey, signature, service, payload.");
+                return response;
+            }
+
+            String apiKey = request.getString("apiKey");
+            String signature = request.getString("signature");
+            String serviceName = request.getString("service");
+            JSONObject payload = request.getJSONObject("payload");
+
+            // 1. Validar la existencia de la API Key y recuperar el Secret encriptado desde DB2
+            String encryptedSecret = BankingOperationsDAO.getClientSecretByApiKey(apiKey);
+            if (encryptedSecret == null) {
+                response.put("code", "401");
+                response.put("message", "Autenticación fallida: API Key no autorizada.");
+                return response;
+            }
+
+            // 2. Descifrar el Secret del cliente usando la clave maestra AES del servidor
+            String clientSecret = SecurityService.decryptClientSecret(encryptedSecret);
+
+            // 3. Verificar la integridad del payload mediante la firma HMAC-SHA256
+            boolean isSignatureValid = SecurityService.verifySignature(payload.toString(), clientSecret, signature);
+            if (!isSignatureValid) {
+                response.put("code", "403");
+                response.put("message", "Acceso denegado: Firma HMAC no coincide o el payload fue alterado.");
+                return response;
+            }
+
+            // 4. Enrutamiento al servicio bancario solicitado
+            response = ServiceRouter.route(serviceName, payload);
+
+        } catch (JSONException e) {
+            response.put("code", "400");
+            response.put("message", "Formato JSON malformado: " + e.getMessage());
+        } catch (Exception e) {
+            response.put("code", "500");
+            response.put("message", "Error interno procesando la transacción en el servidor: " + e.getMessage());
+        }
+
+        return response;
+    }
+
+    /**
+     * Helper para emitir respuestas de error directamente al buffer del cliente.
+     */
+    private void sendErrorResponse(BufferedWriter writer, String code, String message) {
+        try {
+            JSONObject err = new JSONObject();
+            err.put("code", code);
+            err.put("message", message);
+            writer.write(err.toString());
+            writer.newLine();
+            writer.flush();
+        } catch (Exception ignored) {
+            // Fallo de red secundario al responder
+        }
+    }
+
+    /**
+     * Cierre seguro del socket del cliente para liberar descriptores en el OS/400.
+     */
+    private void closeSocket() {
+        if (clientSocket != null && !clientSocket.isClosed()) {
+            try {
+                clientSocket.close();
+            } catch (Exception e) {
+                System.err.println("[ESB ClientTask] Error cerrando el socket del cliente: " + e.getMessage());
+            }
+        }
+    }
+}
